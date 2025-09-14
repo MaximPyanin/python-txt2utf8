@@ -1,0 +1,10 @@
+[project]
+name = "python-txt2utf8"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "charset-normalizer>=3.4.3",
+    "tqdm>=4.67.1",
+]
