@@ -1,9 +1,7 @@
-from asyncio import Semaphore, to_thread
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from io import TextIOWrapper
 from charset_normalizer import from_bytes
-from tqdm import tqdm as pbar
-from tqdm.asyncio import tqdm
+from tqdm import tqdm
 
 from models import ConversionReport, BatchItemResult
 
@@ -29,16 +27,11 @@ class Converter:
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
         source_enc, enc_conf = self._detect_encoding(self.input_path)
-        stream_enc = (
-            "utf-8-sig"
-            if "utf-8" in source_enc.lower().replace("_", "-")
-            else source_enc
-        )
 
         bytes_in = self._stream_copy(
             in_file=self.input_path,
             out_file=out_path,
-            src_encoding=stream_enc,
+            src_encoding=source_enc,
             show_progress=show_progress,
         )
 
@@ -51,9 +44,8 @@ class Converter:
             bytes_out=out_path.stat().st_size,
         )
 
-    @classmethod
-    async def batch_convert(
-        cls,
+    @staticmethod
+    def batch_convert(
         inputs_root: Path | str,
         output_dir: Path | str,
         overwrite: bool = False,
@@ -63,34 +55,38 @@ class Converter:
         root = Path(inputs_root)
         out_dir = Path(output_dir)
 
-        files = cls._collect_txt_files(root, recursive=recursive)
+        files = Converter._collect_txt_files(root, recursive=recursive)
         if not files:
             raise ValueError("No .txt files found for batch")
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        sem = Semaphore(max(1, workers))
-
-        async def run_one(p: Path) -> BatchItemResult:
+        def convert_single(file_path: Path) -> BatchItemResult:
             try:
-                async with sem:
-                    rep = await to_thread(
-                        lambda: cls(
-                            input_path=p,
-                            output_path=cls._make_output_path(
-                                p, out_dir, expect_dir=True
-                            ),
-                            overwrite=overwrite,
-                        ).convert(show_progress=False)
-                    )
-                return BatchItemResult(path=p, ok=True, report=rep, error=None)
+                converter = Converter(
+                    input_path=file_path,
+                    output_path=Converter._make_output_path(
+                        file_path, out_dir, expect_dir=True
+                    ),
+                    overwrite=overwrite,
+                )
+                report = converter.convert(show_progress=False)
+                return BatchItemResult(
+                    path=file_path, ok=True, report=report, error=None
+                )
             except Exception as e:
-                return BatchItemResult(path=p, ok=False, report=None, error=str(e))
+                return BatchItemResult(
+                    path=file_path, ok=False, report=None, error=str(e)
+                )
 
-        coros = [run_one(p) for p in files]
+        results = []
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(convert_single, f): f for f in files}
 
-        results: list[BatchItemResult] = []
-        for fut in tqdm.as_completed(coros, total=len(coros), desc="Converting"):
-            results.append(await fut)
+            for future in tqdm(
+                as_completed(futures), total=len(files), desc="Converting"
+            ):
+                results.append(future.result())
+
         return results
 
     @staticmethod
@@ -117,47 +113,50 @@ class Converter:
     def _detect_encoding(cls, file_path: Path) -> tuple[str, float]:
         with file_path.open("rb") as f:
             sample = f.read(cls.DETECT_MAX_BYTES)
+
+        fallback_encodings = ["utf-8-sig", "utf-8", "cp1251", "latin-1"]
+
         match = from_bytes(sample).best()
-        if not match or not match.encoding:
-            raise ValueError("Failed to detect text encoding (file may be binary)")
-        return match.encoding, float(getattr(match, "confidence", 0.0))
+        if match and match.encoding:
+            return match.encoding, 0.8
+
+        for encoding in fallback_encodings:
+            try:
+                sample.decode(encoding)
+                return encoding, 0.8
+            except UnicodeDecodeError:
+                continue
+
+        return "latin-1", 0.5
 
     @classmethod
     def _stream_copy(
         cls, in_file: Path, out_file: Path, src_encoding: str, show_progress: bool
     ) -> int:
         total_bytes = in_file.stat().st_size
-        read_bytes = 0
 
         with (
-            in_file.open("rb") as raw_in,
-            out_file.open("w", encoding="utf-8", newline="") as f_out,
+            in_file.open("r", encoding=src_encoding, errors="replace") as f_in,
+            out_file.open("w", encoding="utf-8") as f_out,
         ):
-            reader = TextIOWrapper(raw_in, encoding=src_encoding, newline="")
-
             if show_progress:
-                last_pos = 0
-                with pbar(
+                with tqdm(
                     total=total_bytes, unit="B", unit_scale=True, desc=f"{in_file.name}"
-                ) as bar:
+                ) as pbar:
                     while True:
-                        chunk = reader.read(cls.READ_CHARS)
+                        chunk = f_in.read(cls.READ_CHARS)
                         if not chunk:
                             break
                         f_out.write(chunk)
-                        pos = raw_in.tell()
-                        bar.update(pos - last_pos)
-                        last_pos = pos
-                    read_bytes = raw_in.tell()
+                        pbar.update(len(chunk.encode("utf-8")))
             else:
                 while True:
-                    chunk = reader.read(cls.READ_CHARS)
+                    chunk = f_in.read(cls.READ_CHARS)
                     if not chunk:
                         break
                     f_out.write(chunk)
-                read_bytes = raw_in.tell()
 
-        return int(read_bytes)
+        return total_bytes
 
     @staticmethod
     def _collect_txt_files(root: Path, recursive: bool) -> list[Path]:

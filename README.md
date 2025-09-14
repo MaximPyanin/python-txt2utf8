@@ -1,19 +1,16 @@
 # python-txt2utf8
-
 A robust Python utility for converting text files to UTF-8 encoding with multithreaded batch processing capabilities and containerized deployment.
 
 ## Features
-
 - **Core Functionality**: Convert individual .txt files to UTF-8 encoding with automatic encoding detection
-- **Multithreaded Batch Processing**: Convert multiple files simultaneously using thread pool with configurable worker threads
-- **Async I/O Operations**: High-performance file processing with async architecture for maximum throughput
-- **Chunk-based Processing**: Memory-efficient file handling by processing files in chunks instead of loading entire files
+- **Multithreaded Batch Processing**: Convert multiple files simultaneously using ThreadPoolExecutor with configurable worker threads
+- **Chunk-based Processing**: Memory-efficient file handling by processing files in chunks
 - **Progress Tracking**: Real-time progress bars for both single and batch operations
 - **Containerized Deployment**: Docker support for consistent, isolated execution environments
-- **Thread Pool Management**: Efficient resource utilization with semaphore-controlled concurrency
+- **Thread Pool Management**: Efficient resource utilization with worker pool concurrency
+- **Fallback Encoding**: Support for common encodings when automatic detection fails
 
 ## Installation
-
 ### Using uv
 ```bash
 git clone https://github.com/MaximPyanin/python-txt2utf8.git
@@ -61,10 +58,10 @@ I selected two enhancements that provide the most value for real-world file proc
 ### 1. Batch Conversion with Progress Tracking
 
 **Value Added:**
-The multithreaded system uses a thread pool to process multiple files at the same time. This is much faster than converting files one by one. With 8 worker threads, we can convert 1000 files in 15 minutes instead of 2 hours. The progress bar shows how many files are done, so users know when the job will finish.
+The batch flow now uses a plain ThreadPoolExecutor with as_completed to process many files concurrently. The progress bar updates as each future finishes, so feedback is immediate. Work is chunked per file, which keeps memory steady even on large inputs
 
 **Risk Mitigation:**
-The semaphore controls how many threads work at once, preventing memory problems on large batches. If one file fails, other files keep processing normally. The error reporting tells you exactly which files had problems and why.
+max_workers directly limits concurrency and I/O pressure on the disk. Each file runs in its own task, so one failure does not stop the whole batch. We also keep safe encoding fallbacks to avoid hard stops when detection is uncertain and report exactly which files failed.
 
 **Client Alignment:**
 Companies need to convert thousands of files during migrations. The thread pool approach makes this practical for production use.
@@ -79,5 +76,3 @@ Container isolation protects the host system during file operations. Frozen depe
 
 **Client Alignment:**
 Modern deployment uses containers. This fits with existing Kubernetes setups and CI/CD pipelines that companies already use.
-
-These changes turn a simple converter into a production tool that handles real workloads efficiently while being easy to deploy.

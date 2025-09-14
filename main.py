@@ -1,8 +1,7 @@
 from argparse import ArgumentParser
-from asyncio import run
 from pathlib import Path
 
-from convertor import Converter
+from converter import Converter
 
 
 def _parser() -> ArgumentParser:
@@ -25,14 +24,13 @@ def main() -> None:
     dst = Path(a.output)
 
     if src.is_dir():
-        results = run(
-            Converter.batch_convert(
-                inputs_root=src,
-                output_dir=dst,
-                overwrite=a.overwrite,
-                workers=max(1, a.workers),
-                recursive=not a.no_recursive,
-            )
+        converter = Converter(src, dst, overwrite=a.overwrite)
+        results = converter.batch_convert(
+            inputs_root=src,
+            output_dir=dst,
+            overwrite=a.overwrite,
+            workers=max(1, a.workers),
+            recursive=not a.no_recursive,
         )
         ok = sum(r.ok for r in results)
         fail = len(results) - ok
